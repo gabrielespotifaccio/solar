@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solar System with Speed Control</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #00001a; /* Deep dark blue */
+            color: #fff; /* Ensure text is visible */
+            font-family: sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        /* Style for the speed control bar */
+        #speedControlContainer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent background */
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 10; /* Ensure it's above the canvas */
+        }
+        #speedControlContainer label {
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        #speedSlider {
+            vertical-align: middle;
+            width: 150px; /* Adjust width as needed */
+        }
+    </style>
+</head>
+<body>
+    <!-- Speed Control UI -->
+    <div id="speedControlContainer">
+        <label for="speedSlider">Speed:</label>
+        <input type="range" id="speedSlider" min="0" max="200" value="100"> <!-- Range 0-200, default 100 (1x speed) -->
+    </div>
+
+    <!-- Three.js script -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls;
+        let sun, sunGlow;
+        const planets = [];
+        const clock = new THREE.Clock();
+        let timeScale = 1.0; // --- Global speed multiplier ---
+
+        // Planet data (same as previous version)
+        const planetData = [
+            { name: 'Mercury', size: 0.4, color: 0xcccccc, emissive: 0x333333, roughness: 0.9, orbitRadius: 8, orbitSpeedFactor: 4.15, rotationSpeed: 0.01, tilt: 0.03, hasAtmosphere: false },
+            { name: 'Venus', size: 0.9, color: 0xfffacd, emissive: 0x444411, roughness: 0.8, orbitRadius: 12, orbitSpeedFactor: 1.62, rotationSpeed: 0.005, tilt: 177.4, hasAtmosphere: true, atmosphereColor: 0xffcc33 },
+            { name: 'Earth', size: 1.0, color: 0x87cefa, emissive: 0x112233, roughness: 0.7, orbitRadius: 16, orbitSpeedFactor: 1.00, rotationSpeed: 0.02, tilt: 23.44, hasAtmosphere: true, atmosphereColor: 0xadd8ff },
+            { name: 'Mars', size: 0.5, color: 0xff6347, emissive: 0x441100, roughness: 0.9, orbitRadius: 22, orbitSpeedFactor: 0.53, rotationSpeed: 0.018, tilt: 25.19, hasAtmosphere: false },
+            { name: 'Jupiter', size: 4.0, color: 0xffdead, emissive: 0x332211, roughness: 0.5, orbitRadius: 35, orbitSpeedFactor: 0.084, rotationSpeed: 0.04, tilt: 3.13, hasAtmosphere: false },
+            { name: 'Saturn', size: 3.5, color: 0xfff8dc, emissive: 0x333311, roughness: 0.6, orbitRadius: 50, orbitSpeedFactor: 0.034, rotationSpeed: 0.035, tilt: 26.73, hasAtmosphere: false, ringColor: 0xdddddd },
+            { name: 'Uranus', size: 2.0, color: 0xafdfe4, emissive: 0x112222, roughness: 0.6, orbitRadius: 65, orbitSpeedFactor: 0.012, rotationSpeed: 0.025, tilt: 97.77, hasAtmosphere: false },
+            { name: 'Neptune', size: 1.9, color: 0x7b90ff, emissive: 0x111133, roughness: 0.6, orbitRadius: 78, orbitSpeedFactor: 0.006, rotationSpeed: 0.028, tilt: 28.32, hasAtmosphere: false }
+        ];
+        const BASE_ORBIT_SPEED = 0.005;
+
+        // --- Function Definitions (createStarfield, createOrbitLine, createAtmosphere, createGlowTexture) remain the same ---
+        function createStarfield() {
+            const vertices = [];
+            for (let i = 0; i < 20000; i++) {
+                const radius = THREE.MathUtils.randFloat(500, 1800);
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta);
+                const z = radius * Math.cos(phi);
+                vertices.push(x, y, z);
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            const material = new THREE.PointsMaterial({ color: 0xffffff, size: 2.0, sizeAttenuation: true, transparent: true, opacity: 0.9 });
+            const stars = new THREE.Points(geometry, material);
+            scene.add(stars);
+        }
+
+        function createOrbitLine(radius) {
+            const segments = 128;
+            const material = new THREE.LineBasicMaterial({ color: 0x666666, transparent: true, opacity: 0.5 });
+            const geometry = new THREE.BufferGeometry();
+            const points = [];
+            for (let i = 0; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                points.push(new THREE.Vector3(Math.cos(theta) * radius, 0, Math.sin(theta) * radius));
+            }
+            geometry.setFromPoints(points);
+            const line = new THREE.LineLoop(geometry, material);
+            scene.add(line);
+        }
+
+        function createAtmosphere(planetMesh, size, color) {
+             const atmosphereGeometry = new THREE.SphereGeometry(size * 1.06, 32, 16);
+             const atmosphereMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, side: THREE.BackSide });
+             const atmosphereMesh = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial);
+             planetMesh.add(atmosphereMesh);
+        }
+
+        function createGlowTexture(centerColor, outerColor) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const context = canvas.getContext('2d');
+            const gradient = context.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, canvas.width/2);
+            gradient.addColorStop(0.1, new THREE.Color(centerColor).getStyle());
+            gradient.addColorStop(0.4, new THREE.Color(outerColor).getStyle());
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            return new THREE.CanvasTexture(canvas);
+        }
+        // --- End of unchanged function definitions ---
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x00001a, 0.0015);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 3000);
+            camera.position.set(0, 70, 130);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 0.8;
+            document.body.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.minDistance = 10;
+            controls.maxDistance = 800;
+            controls.target.set(0, 0, 0);
+
+            // Lighting (same as previous)
+            scene.add(new THREE.AmbientLight(0x606080));
+            const pointLight = new THREE.PointLight(0xffffff, 25, 2000, 1.8);
+            scene.add(pointLight);
+            const hemisphereLight = new THREE.HemisphereLight(0xccccff, 0x666699, 0.8);
+            scene.add(hemisphereLight);
+
+            createStarfield();
+
+            // Sun (same as previous)
+            const sunGeometry = new THREE.SphereGeometry(5, 64, 32);
+            const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            sun = new THREE.Mesh(sunGeometry, sunMaterial);
+            scene.add(sun);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: createGlowTexture(0xffffff, 0xffcc00), color: 0xffffff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending });
+            sunGlow = new THREE.Sprite(spriteMaterial);
+            sunGlow.scale.set(40, 40, 1);
+            sun.add(sunGlow);
+
+            // Create Planets and Orbits (same as previous)
+            planetData.forEach(data => {
+                const geometry = new THREE.SphereGeometry(data.size, 32, 16);
+                const material = new THREE.MeshStandardMaterial({ color: data.color, emissive: data.emissive, roughness: data.roughness, metalness: 0.1 });
+                const mesh = new THREE.Mesh(geometry, material);
+                const orbitPivot = new THREE.Object3D();
+                scene.add(orbitPivot);
+                mesh.rotation.y = Math.random() * Math.PI * 2;
+                mesh.rotateZ(THREE.MathUtils.degToRad(data.tilt));
+                orbitPivot.add(mesh);
+                const planet = { mesh: mesh, orbitPivot: orbitPivot, orbitRadius: data.orbitRadius, orbitSpeed: BASE_ORBIT_SPEED / data.orbitSpeedFactor, rotationSpeed: data.rotationSpeed, orbitAngle: Math.random() * Math.PI * 2 };
+                orbitPivot.position.x = Math.cos(planet.orbitAngle) * planet.orbitRadius;
+                orbitPivot.position.z = Math.sin(planet.orbitAngle) * planet.orbitRadius;
+                planets.push(planet);
+                if (data.hasAtmosphere) createAtmosphere(mesh, data.size, data.atmosphereColor);
+                if (data.name === 'Saturn') {
+                    const ringGeometry = new THREE.RingGeometry(data.size * 1.2, data.size * 2.2, 64);
+                    const ringMaterial = new THREE.MeshBasicMaterial({ color: data.ringColor, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
+                    const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
+                    ringMesh.rotation.x = Math.PI / 2;
+                    mesh.add(ringMesh);
+                }
+                createOrbitLine(data.orbitRadius);
+            });
+
+             // --- Speed Slider Event Listener ---
+            const speedSlider = document.getElementById('speedSlider');
+            speedSlider.addEventListener('input', (event) => {
+                // Map slider value (0-200) to timeScale (0.0 - 2.0)
+                timeScale = parseFloat(event.target.value) / 100.0;
+            });
+
+            window.addEventListener('resize', onWindowResize, false);
+            animate();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const effectiveDelta = delta * timeScale; // --- Apply timeScale ---
+
+            // Use effectiveDelta for all time-based movements
+            sun.rotation.y += 0.001 * effectiveDelta * 60;
+
+            planets.forEach(planet => {
+                planet.orbitAngle += planet.orbitSpeed * effectiveDelta * 60;
+                planet.orbitPivot.position.x = Math.cos(planet.orbitAngle) * planet.orbitRadius;
+                planet.orbitPivot.position.z = Math.sin(planet.orbitAngle) * planet.orbitRadius;
+                planet.mesh.rotation.y += planet.rotationSpeed * effectiveDelta * 60;
+            });
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
